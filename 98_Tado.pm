@@ -1,6 +1,4 @@
 package main;
-use strict;
-use warnings;
 
 use strict;
 use warnings;
@@ -100,9 +98,9 @@ sub Tado_Define($$)
 	$hash->{Password} = $password;
 
 	if (defined $param[4]) {
-		$hash->{DEF} = "$hash->{Username} $password $param[4]";
+		$hash->{DEF} = sprintf("%s %s %s", InternalVal($name,'Username', undef), $password, $param[4]);
 	} else {
-		$hash->{DEF} = "$hash->{Username} $password";
+		$hash->{DEF} = sprintf("%s %s", InternalVal($name,'Username', undef) ,$password);
 	}
 
 	#Check if interval is set and numeric.
@@ -123,11 +121,11 @@ sub Tado_Define($$)
 	if( $interval < 5 ) { $interval = 5; }
 	$hash->{INTERVAL} = $interval;
 
-	$hash->{STATE} = "Undefined";
+	readingsSingleUpdate($hash,'state','Undefined',0);
 
-	$attr{$name}{generateDevices} = "no" if( !defined( $attr{$name}{generateDevices} ) );
-	$attr{$name}{generateMobileDevices} = "no" if( !defined( $attr{$name}{generateMobileDevices} ) );
-	$attr{$name}{generateWeather} = "no" if( !defined( $attr{$name}{generateWeather} ) );
+	CommandAttr(undef,$name.' generateDevices no') if ( AttrVal($name,'generateDevices','none') eq 'none' );
+	CommandAttr(undef,$name.' generateMobileDevices no') if ( AttrVal($name,'generateMobileDevices','none') eq 'none' );
+	CommandAttr(undef,$name.' generateWeather no') if ( AttrVal($name,'generateWeather','none') eq 'none' );
 
 	#Initial load of the homes
 	Tado_GetHomesAndDevices($hash);
@@ -138,8 +136,8 @@ sub Tado_Define($$)
 	#Otherwise some error messages are generated due to auto created devices...
 	InternalTimer(gettimeofday()+15, "Tado_GetZones", $hash) if (defined $hash);
 
-	Log3 $name, 5, "Tado_Define $name: Starting timer with Interval $hash->{INTERVAL}";
-	InternalTimer(gettimeofday()+$hash->{INTERVAL}, "Tado_UpdateDueToTimer", $hash) if (defined $hash);
+	Log3 $name, 1, sprintf("Tado_Define %s: Starting timer with interval %s", $name, InternalVal($name,'INTERVAL', undef));
+	InternalTimer(gettimeofday()+ InternalVal($name,'INTERVAL', undef), "Tado_UpdateDueToTimer", $hash) if (defined $hash);
 	return undef;
 }
 
@@ -266,23 +264,23 @@ sub Tado_Set($@)
 
 	if ($opt eq "start")	{
 
-		$hash->{STATE} = 'Started';
+		readingsSingleUpdate($hash,'state','Started',0);
 		RemoveInternalTimer($hash);
 
 		$hash->{LOCAL} = 1;
 		Tado_RequestZoneUpdate($hash);
 		delete $hash->{LOCAL};
 
-		InternalTimer(gettimeofday()+$hash->{INTERVAL}, "Tado_UpdateDueToTimer", $hash);
+		InternalTimer(gettimeofday()+ InternalVal($name,'INTERVAL', undef), "Tado_UpdateDueToTimer", $hash);
 
-		Log3 $name, 1, "Tado_Set $name: Updated readings and started timer to automatically update readings with interval $hash->{INTERVAL}";
+		Log3 $name, 1, sprintf("Tado_Set %s: Updated readings and started timer to automatically update readings with interval %s", $name, InternalVal($name,'INTERVAL', undef));
 
 
 	} elsif ($opt eq "stop"){
 
 		RemoveInternalTimer($hash);
 		Log3 $name, 1, "Tado_Set $name: Stopped the timer to automatically update readings";
-		$hash->{STATE} = 'Initialized';
+		readingsSingleUpdate($hash,'state','Initialized',0);
 		return undef;
 
 	} elsif ($opt eq "interval"){
@@ -317,8 +315,8 @@ sub Tado_GetHomesAndDevices($)
 
 	my $readTemplate = $url{"getHomeId"};
 
-	my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-	my $user = urlEncode($hash->{Username});
+	my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+	my $user = urlEncode(InternalVal($name,'Username', undef));
 
 	$readTemplate =~ s/#Username#/$user/g;
 	$readTemplate =~ s/#Password#/$passwd/g;
@@ -327,51 +325,31 @@ sub Tado_GetHomesAndDevices($)
 
 	if (defined $d && ref($d) eq "HASH" && defined $d->{errors}){
 
-		$hash->{STATE} = "Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}";
+		readingsSingleUpdate($hash,'state',"Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}",1);
 		return undef;
 
 	} else {
 
+    my $saveDeviceName = makeDeviceName($d->{homes}[0]->{name});
 		readingsBeginUpdate($hash);
 		readingsBulkUpdate($hash, "HomeID", $d->{homes}[0]->{id} );
-		readingsBulkUpdate($hash, "HomeName", makeDeviceName($d->{homes}[0]->{name}));
+		readingsBulkUpdate($hash, "HomeName", $saveDeviceName );
 		readingsEndUpdate($hash, 1);
 
-		$hash->{HomeID} = $d->{homes}[0]->{id};
-		$hash->{HomeName} = $d->{homes}[0]->{name};
+		Log3 $name, 1, "New Tado Home defined. Id: $d->{homes}[0]->{id} Name: $saveDeviceName";
 
-		Log3 $name, 1, "New Tado Home defined. Id: $hash->{HomeID} Name: $hash->{HomeName}";
-
-
+    # This code should not be called, as TADO states in the FAQ they're currently just supporting one single home.
 		if (scalar (@{$d->{homes}}) > 1 ){
+		 $saveDeviceName = makeDeviceName($d->{homes}[1]->{name});
 			readingsBeginUpdate($hash);
 			readingsBulkUpdate($hash, "HomeID_2", $d->{homes}[1]->{id} );
-			readingsBulkUpdate($hash, "HomeName_2",  makeDeviceName($d->{homes}[1]->{name}));
+			readingsBulkUpdate($hash, "HomeName_2",  $saveDeviceName);
 			readingsEndUpdate($hash, 1);
 
-			$hash->{HomeID_2} = $d->{homes}[1]->{id};
-			$hash->{HomeName_2} = $d->{homes}[1]->{name};
-			Log3 $name, 1, "New Tado Home defined. Id: $hash->{HomeID_2} Name: $hash->{HomeName_2}";
+			Log3 $name, 1, "New Tado Home defined. Id: $d->{homes}[1]->{id} Name: $saveDeviceName";
 		}
 
-		if (scalar (@{$d->{mobileDevices}}) > 0 ){
-			readingsBeginUpdate($hash);
-			for (my $mobileDeviceCounter = 0; $mobileDeviceCounter < scalar (@{$d->{mobileDevices}}); $mobileDeviceCounter++){
-				my $deviceId_Fieldname = "MobileDevice_".$mobileDeviceCounter."_id";
-				my $deviceName_Fieldname = "MobileDevice_".$mobileDeviceCounter."_Name";
-				readingsBulkUpdate($hash, $deviceId_Fieldname, $d->{mobileDevices}[$mobileDeviceCounter]->{id} );
-				readingsBulkUpdate($hash, $deviceName_Fieldname , makeDeviceName($d->{mobileDevices}[$mobileDeviceCounter]->{name}));
-
-
-				$hash->{$deviceId_Fieldname} = $d->{mobileDevices}[$mobileDeviceCounter]->{id};
-				$hash->{$deviceName_Fieldname} = makeDeviceName($d->{mobileDevices}[$mobileDeviceCounter]->{name});
-
-				Log3 $name, 1, "New Tado Device defined. Id: $hash->{$deviceId_Fieldname} Name: $hash->{$deviceName_Fieldname}";
-			}
-			readingsEndUpdate($hash, 1);
-		}
-
-		$hash->{STATE} = 'Initialized';
+		readingsSingleUpdate($hash,'state','Initialized',0);
 		return undef;
 	}
 
@@ -389,7 +367,8 @@ sub Tado_GetZones($)
 		return $msg;
 	}
 
-	if (not defined $hash->{"HomeID"}){
+  my $homeID = ReadingsVal ($name,"HomeID",undef);
+	if (not defined $homeID) {
 		my $msg = "Error on Tado_GetZones. Missing HomeID. Please define Home first.";
 		Log3 'Tado', 1, $msg;
 		return $msg;
@@ -397,11 +376,11 @@ sub Tado_GetZones($)
 
 	my $readTemplate = $url{"getZoneDetails"};
 
-	my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-	my $user = urlEncode($hash->{Username});
+	my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+	my $user = urlEncode(InternalVal($name,'Username', undef));
 
 
-	$readTemplate =~ s/#HomeID#/$hash->{HomeID}/g;
+	$readTemplate =~ s/#HomeID#/$homeID/g;
 	$readTemplate =~ s/#Username#/$user/g;
 	$readTemplate =~ s/#Password#/$passwd/g;
 
@@ -410,20 +389,22 @@ sub Tado_GetZones($)
 
 	if (defined $d && ref($d) eq "HASH" && defined $d->{errors}){
 		log 1, Dumper $d;
-		$hash->{STATE} = "Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}";
+		readingsSingleUpdate($hash,"Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}",'Undefined',1);
 		return undef;
 
 	} else {
 
 		readingsBeginUpdate($hash);
 
-		$hash->{ZoneCount} = 0;
+		my $ZoneCount = 0;
+
     my %ZoneIds = ();
 
   	for my $item( @{$d} ){
 
-			$hash->{ZoneCount} = $hash->{ZoneCount} +1;
-			Log3 $name, 4, "Tado_GetZones ($name): zonecount is $hash->{ZoneCount}";
+			$ZoneCount += 1;
+			readingsBulkUpdate($hash, "ZoneCount", $ZoneCount);
+			Log3 $name, 4, "Tado_GetZones ($name): zonecount is $ZoneCount";
 
       my $deviceName = makeDeviceName($item->{name});
 
@@ -434,27 +415,7 @@ sub Tado_GetZones($)
 
      Log3 'Tado', 4, "While updating zones (displays variable): ".Dumper \%ZoneIds;
 
-			readingsBulkUpdate($hash, "Zone_" . $item->{id} . "_ID"  , $item->{id} );
 			readingsBulkUpdate($hash, "Zone_" . $item->{id} . "_Name"  ,  $deviceName );
-			readingsBulkUpdate($hash, "Zone_" . $item->{id} . "_Type"  , $item->{type} );
-			readingsBulkUpdate($hash, "Zone_" . $item->{id} . "_DateCreated"  , $item->{dateCreated} );
-			readingsBulkUpdate($hash, "Zone_" . $item->{id} . "_SupportsDazzle"  , $item->{supportsDazzle} );
-
-			# Seems zone 0 is reported last
-			# needs to be ensured highest zone id is taken into zones value
-			if (not defined $hash->{Zones}) {
-				$hash->{Zones} = $item->{id};
-			} elsif ($hash->{Zones} < $item->{id}) {
-				$hash->{Zones} = $item->{id};
-			}
-
-			$hash->{"Zone_" . $item->{id} . "_ID"} = $item->{id};
-			$hash->{"Zone_" . $item->{id} . "_Name"} =  makeDeviceName($item->{name});
-			$hash->{"Zone_" . $item->{id} . "_Type"} = $item->{type};
-			$hash->{"Zone_" . $item->{id} . "_DateCreated"} = $item->{dateCreated};
-			$hash->{"Zone_" . $item->{id} . "_SupportsDazzle"} = $item->{supportsDazzle};
-
-
 
 			my $code = $name ."-". $item->{id};
 
@@ -483,10 +444,18 @@ sub Tado_GetZones($)
 
 			}
 
+       #Independent if the device was created or not all internals of the device must be Updated
+			 my $deviceHash = $modules{TadoDevice}{defptr}{$code};
+	     $deviceHash->{originalName} = $item->{name};
+			 $deviceHash->{TadoType} = $item->{Type};
+
+			readingsSingleUpdate($deviceHash, "date_created"  , $item->{dateCreated} , 1);
+	 		readingsSingleUpdate($deviceHash, "supports_dazzle"  , $item->{supportsDazzle}, 1 );
+
 		}
 
     $hash->{ZoneIDs} = join(", ", keys %ZoneIds);
-		Log3 'Tado', 3, "After Updating zones: ".Dumper $hash->{ZoneIDs};
+		Log3 'Tado', 3, "After Updating zones: ".Dumper InternalVal($name,'ZoneIDs', undef);
 		#Log3 'Tado', 1, "Hashdump: ".Dumper $hash;
 		readingsEndUpdate($hash, 1);
 		return undef;
@@ -509,13 +478,21 @@ sub Tado_GetDevices($)
 		return $msg;
 	}
 
+
+	my $homeID = ReadingsVal ($name,"HomeID",undef);
+	if (not defined $homeID) {
+		my $msg = "Error on Tado_GetDevices. Missing HomeID. Please define Home first.";
+		Log3 'Tado', 1, $msg;
+		return $msg;
+	}
+
 	my $readTemplate = $url{"getDevices"};
 
-	my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-	my $user = urlEncode($hash->{Username});
+	my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+	my $user = urlEncode(InternalVal($name,'Username', undef));
 
 
-	$readTemplate =~ s/#HomeID#/$hash->{HomeID}/g;
+	$readTemplate =~ s/#HomeID#/$homeID/g;
 	$readTemplate =~ s/#Username#/$user/g;
 	$readTemplate =~ s/#Password#/$passwd/g;
 
@@ -524,7 +501,7 @@ sub Tado_GetDevices($)
 
 	if (defined $d && ref($d) eq "HASH" && defined $d->{errors}){
 		log 1, Dumper $d;
-		$hash->{STATE} = "Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}";
+		readingsSingleUpdate($hash,'state',"Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}",1);
 		return undef;
 
 	} else {
@@ -537,20 +514,21 @@ sub Tado_GetDevices($)
 
 		for my $item( @{$d} ){
 			$count++;
-			$hash->{DeviceCount} = 	$count;
+      readingsBulkUpdate($hash, "DeviceCount", $count);
+      readingsBulkUpdate($hash, "Device_".$item->{serialNo} , $item->{deviceType});
 
 			my $code = $name ."-". $item->{serialNo};
 
 			if( defined($modules{TadoDevice}{defptr}{$code}) )
 			{
-				Log3 $name, 5, "Tado_GetDevices ($name): device id '$item->{id}' already defined as '$modules{TadoDevice}{defptr}{$code}->{NAME}'";
+				Log3 $name, 5, "Tado_GetDevices ($name): device id '$item->{serialNo}' already defined as '$modules{TadoDevice}{defptr}{$code}->{NAME}'";
 			} else {
 
 				my $deviceName = "Tado_" . $item->{serialNo};
 				$deviceName =~ s/ /_/g;
 				my $define= "$deviceName TadoDevice $item->{serialNo} IODev=$name";
 
-				Log3 $name, 1, "Tado_GetDevices ($name): create new device '$deviceName' for zone '$item->{id}'";
+				Log3 $name, 1, "Tado_GetDevices ($name): create new device '$deviceName' of type '$item->{deviceType}'";
 
 				my $cmdret= CommandDefine(undef,$define);
 
@@ -603,8 +581,8 @@ sub Tado_GetMobileDevices($)
 
 	my $readTemplate = $url{"getMobileDevices"};
 
-	my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-	my $user = urlEncode($hash->{Username});
+	my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+	my $user = urlEncode(InternalVal($name,'Username', undef));
 
 	$readTemplate =~ s/#Username#/$user/g;
 	$readTemplate =~ s/#Password#/$passwd/g;
@@ -614,7 +592,7 @@ sub Tado_GetMobileDevices($)
 
 	if (defined $d && ref($d) eq "HASH" && defined $d->{errors}){
 		log 1, Dumper $d;
-		$hash->{STATE} = "Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}";
+		readingsSingleUpdate($hash,'state',"Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}",1);
 		return undef;
 
 	} else {
@@ -627,7 +605,9 @@ sub Tado_GetMobileDevices($)
 		my $count = 0;
 		for my $item( @{$d->{mobileDevices}} ){
 			$count++;
-			$hash->{MobileDeviceCount} = $count;
+			readingsBulkUpdate($hash, "MobileDeviceCount", $count);
+
+      readingsBulkUpdate($hash, "MobileDevice_".$item->{id} , $item->{name});
 
       Log3 $name, 2, "Tado_GetMobileDevices: Adding mobile device with id '$item->{id}' and name (with unsave characters) '$item->{name}'";
 
@@ -670,7 +650,7 @@ sub Tado_GetMobileDevices($)
 		}
 
 		$hash->{MobileDeviceIDs} = join(", ", keys %MobileDeviceIds);
-		Log3 'Tado', 3, "After Updating mobile device ids: ".Dumper $hash->{ZoneIDs};
+		Log3 'Tado', 3, "After Updating mobile device ids: ".Dumper InternalVal($name,'ZoneIds', undef);
 
 	}
 
@@ -692,7 +672,8 @@ sub Tado_DefineWeatherChannel($)
 
 	}
 
-	if (not defined $hash->{"HomeID"}){
+	my $homeID = ReadingsVal ($name,"HomeID",undef);
+	if (not defined $homeID){
 		my $msg = "Error on Tado_DefineWeatherChannel. Missing HomeID. Please define Home first.";
 		Log3 'Tado', 1, $msg;
 		return $msg;
@@ -705,10 +686,6 @@ sub Tado_DefineWeatherChannel($)
 		Log3 'Tado', 1, $msg;
 		return $msg;
 	}
-
-
-
-
 
 
 	my $code = $name ."-weather";
@@ -748,26 +725,28 @@ sub Tado_GetEarlyStart($)
 	my $name = $hash->{NAME};
 
 	if (not defined $hash){
-		Log3 $name, 1, "Erro in Tado_GetEarlyStart: No zones defined. Define zones first." if (not defined $hash->{Zones});
+		Log3 $name, 1, "Erro in Tado_GetEarlyStart: No zones defined. Define zones first." if (not defined InternalVal($name,'ZoneIDs', undef));
 		return undef;
 	}
 
-	my $it=1;
-	if (defined $hash->{"Zone_0_ID"}) {$it = 0;};
+	my $homeID = ReadingsVal ($name,"HomeID",undef);
+	if (not defined $homeID) {
+		my $msg = "Error on Tado_GetEarlyStart. Missing HomeID. Please define Home first.";
+		Log3 'Tado', 1, $msg;
+		return $msg;
+	}
 
-	Log3 $name, 3, "Getting status update on early start for $hash->{ZoneCount} zones.";
+	Log3 $name, 3, sprintf("Getting status update on early start for %s zones.", ReadingsVal($name,'ZoneCount', undef));
 
-	for (my $i=$it; $i <= $hash->{Zones}; $i++) {
+	foreach my $i (split /, /,  InternalVal($name,'ZoneIDs', undef)) {
 
 		my $readTemplate = $url{earlyStart};
 
-		my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-		my $user = urlEncode($hash->{Username});
+		my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+		my $user = urlEncode(InternalVal($name,'Username', undef));
 
-		my $ZoneName = "Zone_" . $i . "_ID";
-
-		$readTemplate =~ s/#HomeID#/$hash->{HomeID}/g;
-		$readTemplate =~ s/#ZoneID#/$hash->{$ZoneName}/g;
+		$readTemplate =~ s/#HomeID#/$homeID/g;
+		$readTemplate =~ s/#ZoneID#/$i/g;
 		$readTemplate =~ s/#Username#/$user/g;
 		$readTemplate =~ s/#Password#/$passwd/g;
 
@@ -790,8 +769,8 @@ sub Tado_UpdateEarlyStartCallback($)
 
 	if($err ne "")                                                                                                      # wenn ein Fehler bei der HTTP Abfrage aufgetreten ist
 	{
-		Log3 $name, 3, "error while requesting ".$param->{url}." - $err";                                               # Eintrag fürs Log
-		readingsSingleUpdate($hash, "fullResponse", "ERROR", 0);
+		Log3 $name, 3, "error while requesting EarlyStart Information: ".$param->{url}." - $err";                                               # Eintrag fürs Log
+		readingsSingleUpdate($hash, "state", "ERROR", 1);
 		return undef;
 	}
 
@@ -816,7 +795,7 @@ sub Tado_UpdateEarlyStartCallback($)
 
 		if (defined $d && ref($d) eq "HASH" && defined $d->{errors}){
 			log 1, Dumper $d;
-			$hash->{STATE} = "Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}";
+			readingsSingleUpdate($hash,'state',"Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}",0);
 			return undef;
 		}
 
@@ -840,26 +819,31 @@ sub Tado_RequestEarlyStartUpdate($)
 	my $name = $hash->{NAME};
 
 	if (not defined $hash){
-		Log3 $name, 1, "Error in Tado_RequestEarlyStartUpdate: No zones defined. Define zones first." if (not defined $hash->{Zones});
+		Log3 $name, 1, "Error in Tado_RequestEarlyStartUpdate: No zones defined. Define zones first." if (not defined InternalVal($name,'ZoneIDs', undef));
 		return undef;
 	}
 
-	Log3 $name, 3, "Getting status update on eraly start for $hash->{ZoneCount} zones.";
+	my $homeID = ReadingsVal ($name,"HomeID",undef);
+	if (not defined $homeID) {
+		my $msg = "Error on Tado_RequestEarlyStartUpdate. Missing HomeID. Please define Home first.";
+		Log3 'Tado', 1, $msg;
+		return $msg;
+	}
 
-	my $it=1;
-	if (defined $hash->{"Zone_0_ID"}) {$it = 0;};
 
-	for (my $i=$it; $i <= $hash->{Zones}; $i++) {
+Log3 $name, 3, sprintf("Getting status update on early start for %s zones.", ReadingsVal($name,'ZoneCount', undef));
+
+	foreach my $i (split /, /,  InternalVal($name,'ZoneIDs', undef)) {
 
 		my $readTemplate = $url{earlyStart};
 
-		my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-		my $user = urlEncode($hash->{Username});
+		my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+		my $user = urlEncode(InternalVal($name,'Username', undef));
 
 		my $ZoneName = "Zone_" . $i . "_ID";
 
-		$readTemplate =~ s/#HomeID#/$hash->{HomeID}/g;
-		$readTemplate =~ s/#ZoneID#/$hash->{$ZoneName}/g;
+		$readTemplate =~ s/#HomeID#/$homeID/g;
+		$readTemplate =~ s/#ZoneID#/$i/g;
 		$readTemplate =~ s/#Username#/$user/g;
 		$readTemplate =~ s/#Password#/$passwd/g;
 
@@ -889,7 +873,7 @@ sub Tado_UpdateWeatherCallback($)
 	if($err ne "")                                                                                                      # wenn ein Fehler bei der HTTP Abfrage aufgetreten ist
 	{
 		Log3 $name, 3, "error while requesting ".$param->{url}." - $err";                                               # Eintrag fürs Log
-		readingsSingleUpdate($hash, "fullResponse", "ERROR", 0);
+		readingsSingleUpdate($hash, "state", "ERROR", 1);
 		return undef;
 	}
 
@@ -912,7 +896,7 @@ sub Tado_UpdateWeatherCallback($)
 
 		if (defined $d && ref($d) eq "HASH" && defined $d->{errors}){
 			log 1, Dumper $d;
-			$hash->{STATE} = "Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}";
+			readingsSingleUpdate($hash,'state',"Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}",0);
 			return undef;
 		}
 
@@ -929,7 +913,7 @@ sub Tado_UpdateWeatherCallback($)
 		Log3 $name, 4, "$name: tried to dispatch message. Result: $found";
 
 		readingsBeginUpdate($hash);
-		readingsBulkUpdate($hash, "LastUpdate", localtime );
+		readingsBulkUpdate($hash, "LastUpdate_Weather", localtime );
 		readingsEndUpdate($hash, 1);
 
 		return undef;
@@ -949,7 +933,7 @@ sub Tado_UpdateMobileDeviceCallback($)
 	if($err ne "")                                                                                                      # wenn ein Fehler bei der HTTP Abfrage aufgetreten ist
 	{
 		Log3 $name, 3, "error while requesting ".$param->{url}." - $err";                                               # Eintrag fürs Log
-		readingsSingleUpdate($hash, "fullResponse", "ERROR", 0);
+		readingsSingleUpdate($hash, "state", "ERROR", 1);
 		return undef;
 	}
 
@@ -972,7 +956,7 @@ sub Tado_UpdateMobileDeviceCallback($)
 
 		if (defined $d && ref($d) eq "HASH" && defined $d->{errors}){
 			log 1, Dumper $d;
-			$hash->{STATE} = "Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}";
+			readingsSingleUpdate($hash,'state',"Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}",0);
 			return undef;
 		}
 
@@ -1030,6 +1014,13 @@ sub Tado_RequestWeatherUpdate($)
 		return undef;
 	}
 
+	my $homeID = ReadingsVal ($name,"HomeID",undef);
+if (not defined $homeID) {
+	my $msg = "Error on Tado_RequestWeatherUpdate. Missing HomeID. Please define Home first.";
+	Log3 'Tado', 1, $msg;
+	return $msg;
+}
+
 	my $isEnabled = AttrVal($name, 'generateWeather', 'yes');
 	if ($isEnabled eq 'no') {
 		my $msg = "Attribute 'generateWeather' is set to no. Update will not be executed.";
@@ -1047,10 +1038,10 @@ sub Tado_RequestWeatherUpdate($)
 
 	Log3 $name, 4, "Tado_RequestWeatherUpdate Called. Name: $name";
 	my $readTemplate = $url{getWeather};
-	my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-	my $user = urlEncode($hash->{Username});
+	my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+	my $user = urlEncode(InternalVal($name,'Username', undef));
 
-	$readTemplate =~ s/#HomeID#/$hash->{HomeID}/g;
+	$readTemplate =~ s/#HomeID#/$homeID/g;
 	$readTemplate =~ s/#Username#/$user/g;
 	$readTemplate =~ s/#Password#/$passwd/g;
 
@@ -1091,8 +1082,8 @@ sub Tado_RequestMobileDeviceUpdate($)
 
 	Log3 $name, 4, "Tado_RequestMobileDeviceUpdate Called. Name: $name";
 	my $readTemplate = $url{getMobileDevices};
-	my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-	my $user = urlEncode($hash->{Username});
+	my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+	my $user = urlEncode(InternalVal($name,'Username', undef));
 
 	$readTemplate =~ s/#Username#/$user/g;
 	$readTemplate =~ s/#Password#/$passwd/g;
@@ -1122,7 +1113,7 @@ sub Tado_UpdateZoneCallback($)
 	if($err ne "")                                                                                                      # wenn ein Fehler bei der HTTP Abfrage aufgetreten ist
 	{
 		Log3 $name, 3, "error while requesting ".$param->{url}." - $err";                                               # Eintrag fürs Log
-		readingsSingleUpdate($hash, "fullResponse", "ERROR", 0);
+		readingsSingleUpdate($hash, "state", "ERROR", 1);
 		return undef;
 	}
 
@@ -1148,7 +1139,7 @@ sub Tado_UpdateZoneCallback($)
 
 		if (defined $d && ref($d) eq "HASH" && defined $d->{errors}){
 			log 1, Dumper $d;
-			$hash->{STATE} = "Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}";
+			readingsSingleUpdate($hash,'state',"Error: $d->{errors}[0]->{code} / $d->{errors}[0]->{title}",1);
 			return undef;
 		}
 
@@ -1239,7 +1230,7 @@ sub Tado_UpdateZoneCallback($)
 		Log3 $name, 4, "$name: tried to dispatch message. Result: $found";
 
 		readingsBeginUpdate($hash);
-		readingsBulkUpdate($hash, "LastUpdate", localtime );
+		readingsBulkUpdate($hash, "LastUpdate_Zones", localtime );
 		readingsEndUpdate($hash, 1);
 
 		return undef;
@@ -1260,8 +1251,8 @@ sub Tado_UpdateDueToTimer($)
 	if(!$hash->{LOCAL}) {
 		RemoveInternalTimer($hash);
 		#Log3 "Test", 1, Dumper($hash);
-		InternalTimer(gettimeofday()+$hash->{INTERVAL}, "Tado_UpdateDueToTimer", $hash);
-		$hash->{STATE} = 'Polling';
+		InternalTimer(gettimeofday()+InternalVal($name,'INTERVAL', undef), "Tado_UpdateDueToTimer", $hash);
+		readingsSingleUpdate($hash,'state','Polling',0);
 	}
 
 	Tado_RequestZoneUpdate($hash);
@@ -1281,31 +1272,38 @@ sub Tado_RequestZoneUpdate($)
 		return undef;
 	}
 
-	if (not defined $hash->{Zones}){
+	if (not defined InternalVal($name,'ZoneIDs', undef)){
 		Log3 'Tado', 1, "Error on Tado_RequestZoneUpdate. Missing zones. Please define zones first.";
 		return undef;
 	}
 
+	my $homeID = ReadingsVal ($name,"HomeID",undef);
+ if (not defined $homeID) {
+	my $msg = "Error on Tado_RequestZoneUpdate. Missing HomeID. Please define Home first.";
+	Log3 'Tado', 1, $msg;
+	return $msg;
+ }
+
 	Log3 $name, 4, "Tado_RequestZoneUpdate Called for non-blocking value update. Name: $name";
 
-	Log3 $name, 3, "Getting zone update for $hash->{ZoneCount} zones.";
 
-  Log3 $name, 3, "Array out of zone ids: ". Dumper(split /, /,  $hash->{ZoneIDs});
+	Log3 $name, 3, sprintf ("Getting zone update for %s zones.", ReadingsVal($name, "ZoneCount", 0 ));
+
+  Log3 $name, 3, "Array out of zone ids: ". Dumper(split /, /,  InternalVal($name,'ZoneIDs', undef));
 
 
-	foreach my $i (split /, /,  $hash->{ZoneIDs}) {
+	foreach my $i (split /, /,  InternalVal($name,'ZoneIDs', undef)) {
 
     Log3 $name, 3, "Updating zone id: ". $i;
 
 		my $readTemplate = $url{"getZoneTemperature"};
 
-		my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-		my $user = urlEncode($hash->{Username});
+		my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+		my $user = urlEncode(InternalVal($name,'Username', undef));
 
-		my $ZoneName = "Zone_" . $i . "_ID";
 
-		$readTemplate =~ s/#HomeID#/$hash->{HomeID}/g;
-		$readTemplate =~ s/#ZoneID#/$hash->{$ZoneName}/g;
+		$readTemplate =~ s/#HomeID#/$homeID/g;
+		$readTemplate =~ s/#ZoneID#/$i/g;
 		$readTemplate =~ s/#Username#/$user/g;
 		$readTemplate =~ s/#Password#/$passwd/g;
 
@@ -1340,10 +1338,12 @@ sub Tado_Write ($$)
 
 		my $readTemplate = $url{"setZoneTemperature"};
 
-		my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-		my $user = urlEncode($hash->{Username});
+		my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+		my $user = urlEncode(InternalVal($name,'Username', undef));
 
-		$readTemplate =~ s/#HomeID#/$hash->{HomeID}/g;
+		my $homeID = ReadingsVal ($name,"HomeID",undef);
+
+		$readTemplate =~ s/#HomeID#/$homeID/g;
 		$readTemplate =~ s/#ZoneID#/$zoneID/g;
 		$readTemplate =~ s/#Username#/$user/g;
 		$readTemplate =~ s/#Password#/$passwd/g;
@@ -1383,10 +1383,12 @@ sub Tado_Write ($$)
 
 		my $readTemplate = $url{"earlyStart"};
 
-		my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-		my $user = urlEncode($hash->{Username});
+		my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+		my $user = urlEncode(InternalVal($name,'Username', undef));
 
-		$readTemplate =~ s/#HomeID#/$hash->{HomeID}/g;
+		my $homeID = ReadingsVal ($name,"HomeID",undef);
+
+		$readTemplate =~ s/#HomeID#/$homeID/g;
 		$readTemplate =~ s/#ZoneID#/$zoneID/g;
 		$readTemplate =~ s/#Username#/$user/g;
 		$readTemplate =~ s/#Password#/$passwd/g;
@@ -1413,8 +1415,8 @@ sub Tado_Write ($$)
 	if ($code eq 'Hi')
 	{
 		my $readTemplate = $url{"identifyDevice"};
-		my $passwd = urlEncode(tado_decrypt($hash->{Password}));
-		my $user = urlEncode($hash->{Username});
+		my $passwd = urlEncode(tado_decrypt(InternalVal($name,'Password', undef)));
+		my $user = urlEncode(InternalVal($name,'Username', undef));
 
 		$readTemplate =~ s/#DeviceId#/$zoneID/g;
 		$readTemplate =~ s/#Username#/$user/g;
@@ -1477,97 +1479,127 @@ sub tado_decrypt($) {
 <a name="Tado"></a>
 <h3>Tado</h3>
 <ul>
-<i>Tado</i> implements an interface to the Tado cloud. The plugin can be used to read and write
-temperature and settings from or to the Tado cloud. The communication is based on the reengineering of the protocol done by
-Stephen C. Phillips. See <a href="http://blog.scphillips.com/posts/2017/01/the-tado-api-v2/">his blog</a> for more details.
-Not all functions are implemented within this FHEM extension. By now the plugin is capable to
-interact with the so called zones (rooms) and the registered devices. The devices cannot be
-controlled directly. All interaction - like setting a temperature - must be done via the zone and not the device.
-This means all configuration like the registration of new devices or the assignment of a device to a room
-must be done using the Tado app or Tado website directly. Once the configuration is completed this plugin can
-be used.
-This device is the 'bridge device' like a HueBridge or a CUL. Per zone or device a dedicated device of type
-'TadoDevice' will be created.
-<br><br>
-<a name="Tadodefine"></a>
-<b>Define</b>
-<ul>
-<code>define &lt;name&gt; Tado &lt;username&gt; &lt;password&gt; &lt;interval&gt;</code>
-<br><br>
-Example: <code>define TadoBridge Tado mail@provider.com somepassword 120</code>
-<br><br>
-The username and password must match the username and password used on the Tado website.
-Please be aware that username and password are stored and send as plain text. They are visible in FHEM user interface.
-It is recommended to create a dedicated user account for the FHEM integration.
-The Tado extension needs to pull the data from the Tado website. The 'Interval' value defines how often the value is refreshed.
-</ul>
-<br>
-
-<a name="Tasoset"></a>
-<b>Set</b><br>
-<ul>
-<code>set &lt;name&gt; &lt;option&gt;</code>
-<br><br>
-The <i>set</i> command just offers very limited options.
-If can be used to control the refresh mechanism. The plugin only evaluates
-the command. Any additional information is ignored.
-<br><br>
-Options:
-<ul>
-<li><i>interval</i><br>
-Sets how often the values shall be refreshed.
-This setting overwrites the value set during define.</li>
-<li><i>start</i><br>
-(Re)starts the automatic refresh.
-Refresh is autostarted on define but can be stopped using stop command. Using the start command FHEM will start polling again.</li>
-<li><i>stop</i><br>
-Stops the automatic polling used to refresh all values.</li>
-</ul>
-</ul>
-<br>
-
-<a name="Tadoget"></a>
-<b>Get</b><br>
-<ul>
-<code>get &lt;name&gt; &lt;option&gt;</code>
-<br><br>
-You can <i>get</i> the major information from the Tado cloud.
-<br><br>
-Options:
-<ul>
-<li><i>home</i><br>
-Gets the home identifier from Tado cloud.
-The home identifier is required for all further actions towards the Tado cloud.
-Currently the FHEM extension only supports a single home. If you have more than one home only the first home is loaded.
-<br/><b>This function is automatically executed once when a new Tado device is defined.</b></li>
-<li><i>zones</i><br>
-Every zone in the Tado cloud represents a room.
-This command gets all zones defined for the current home.
-Per zone a new FHEM device is created. The device can be used to display and
-overwrite the current temperatures.
-This command can always be executed to update the list of defined zones. It will not touch any existing
-zone but add new zones added since last update.
-<br/><b>This function is automatically executed once when a new Tado device is defined.</b></li>
-</li>
-<li><i>devices</i><br>
-Fetches all devices from Tado cloud and creates one TadoDevice instance
-per fetched device.
-This command can always be executed to update the list of defined devices.
-It will not touch existing devices but add new ones.
-</li>
-<li><i>update</i><br>
-Updates the values of all Tado zones - not the tado devices.</li>
-</ul>
-</ul>
-<br>
-
-<a name="Tadoattr"></a>
-<b>Attributes</b>
-<ul>
-<code>attr &lt;name&gt; &lt;attribute&gt; &lt;value&gt;</code>
-<br><br>
-No attributes so far...
-</ul>
+    <i>Tado</i> implements an interface to the Tado cloud. The plugin can be used to read and write
+    temperature and settings from or to the Tado cloud. The communication is based on the reengineering of the protocol done by
+    Stephen C. Phillips. See <a href="http://blog.scphillips.com/posts/2017/01/the-tado-api-v2/">his blog</a> for more details.
+    Not all functions are implemented within this FHEM extension. By now the plugin is capable to
+    interact with the so called zones (rooms) and the registered devices. The devices cannot be
+    controlled directly. All interaction - like setting a temperature - must be done via the zone and not the device.
+    This means all configuration like the registration of new devices or the assignment of a device to a room
+    must be done using the Tado app or Tado website directly. Once the configuration is completed this plugin can
+    be used.
+    This device is the 'bridge device' like a HueBridge or a CUL. Per zone or device a dedicated device of type
+    'TadoDevice' will be created.
+    <br><br>
+    <a name="Tadodefine"></a>
+    <b>Define</b>
+    <ul>
+        <code>define &lt;name&gt; Tado &lt;username&gt; &lt;password&gt; &lt;interval&gt;</code>
+        <br><br>
+        Example: <code>define TadoBridge Tado mail@provider.com somepassword 120</code>
+        <br><br>
+        The username and password must match the username and password used on the Tado website.
+        Please be aware that username and password are stored and send as plain text. They are visible in FHEM user interface.
+        It is recommended to create a dedicated user account for the FHEM integration.
+        The Tado extension needs to pull the data from the Tado website. The 'Interval' value defines how often the value is refreshed.
+    </ul>
+    <br>
+    <b>Set</b><br>
+    <ul>
+        <code>set &lt;name&gt; &lt;option&gt;</code>
+        <br><br>
+        The <i>set</i> command just offers very limited options.
+        If can be used to control the refresh mechanism. The plugin only evaluates
+        the command. Any additional information is ignored.
+        <br><br>
+        Options:
+        <ul>
+              <li><i>interval</i><br>
+                  Sets how often the values shall be refreshed.
+                  This setting overwrites the value set during define.</li>
+              <li><i>start</i><br>
+                  (Re)starts the automatic refresh.
+                  Refresh is autostarted on define but can be stopped using stop command. Using the start command FHEM will start polling again.</li>
+              <li><i>stop</i><br>
+                  Stops the automatic polling used to refresh all values.</li>
+        </ul>
+    </ul>
+    <br>
+    <a name="Tadoget"></a>
+    <b>Get</b><br>
+    <ul>
+        <code>get &lt;name&gt; &lt;option&gt;</code>
+        <br><br>
+        You can <i>get</i> the major information from the Tado cloud.
+ 	    	<br><br>
+        Options:
+        <ul>
+              <li><i>home</i><br>
+                  Gets the home identifier from Tado cloud.
+                  The home identifier is required for all further actions towards the Tado cloud.
+                  Currently the FHEM extension only supports a single home. If you have more than one home only the first home is loaded.
+                  <br/><b>This function is automatically executed once when a new Tado device is defined.</b></li>
+              <li><i>zones</i><br>
+                  Every zone in the Tado cloud represents a room.
+                  This command gets all zones defined for the current home.
+                  Per zone a new FHEM device is created. The device can be used to display and
+                  overwrite the current temperatures.
+                  This command can always be executed to update the list of defined zones. It will not touch any existing
+                  zone but add new zones added since last update.
+                  <br/><b>This function is automatically executed once when a new Tado device is defined.</b></li>
+                  </li>
+              <li><i>update</i><br/>
+                      Updates the values of: <br/>
+                      <ul>
+                         <li>All Tado zones</li>
+                         <li>All mobile devices - if attribute <i>generateMobileDevices</i> is set to true</li>
+                         <li>The weather device - if attribute <i>generateWeather</i> is set to true</li>
+                      </ul>
+                      This command triggers a single update not a continuous refresh of the values.
+                  </li>
+              <li><i>devices</i><br/>
+                  Fetches all devices from Tado cloud and creates one TadoDevice instance
+                  per fetched device. This command will only be executed if the attribute <i>generateDevices</i> is set to <i>yes</i>. If the attribute is set to <i>no</i> or not existing an error message will be displayed and no communication towards Tado will be done.
+                  This command can always be executed to update the list of defined devices.
+                  It will not touch existing devices but add new ones.
+                  Devices will not be updated automatically as there are no values continuously changing.
+                  </li>
+              <li><i>mobile_devices</i><br/>
+                  Fetches all defined mobile devices from Tado cloud and creates one TadoDevice instance
+                  per mobile device. This command will only be executed if the attribute <i>generateMobileDevices</i> is set to <i>yes</i>. If the attribute is set to <i>no</i> or not existing an error message will be displayed and no communication towards Tado will be done.
+                  This command can always be executed to update the list of defined mobile devices.
+                  It will not touch existing devices but add new ones.
+              </li>
+              <li><i>weather</i><br/>
+                  Creates or updates an additional device for the data bridge containing the weather data provided by Tado. This command will only be executed if the attribute <i>generateWeather</i> is set to <i>yes</i>. If the attribute is set to <i>no</i> or not existing an error message will be displayed and no communication towards Tado will be done.
+              </li>
+        </ul>
+    </ul>
+    <br>
+    <a name="Tadoattr"></a>
+    <b>Attributes</b>
+    <ul>
+        <code>attr &lt;name&gt; &lt;attribute&gt; &lt;value&gt;</code>
+        <br><br>
+         You can change the behaviour of the Tado Device.
+         <br><br>
+         Attributes:
+         <ul>
+               <li><i>generateDevices</i><br>
+                   By default the devices are not fetched and displayed in FHEM as they don't offer much functionality.
+                   The functionality is handled by the zones not by the devices. But the devices offers an identification function <i>sayHi</i> to show a message on the specific display. If this function is required the Devices can be generated. Therefor the attribute <i>generateDevices</i> must be set to <i>yes</i>
+                   <br/><b>If this attribute is set to <i>no</i> or if the attribute is not existing no devices will be generated..</b>
+                </li>
+                <li><i>generateMobileDevices</i><br>
+                    By default the mobile devices are not fetched and displayed in FHEM as most users already have a person home recognition. If Tado shall be used to identify if a mobile device is at home this can be done using the mobile devices. In this case the mobile devices can be generated. Therefor the attribute <i>generateMobileDevices</i> must be set to <i>yes</i>
+                    <br/><b>If this attribute is set to <i>no</i> or if the attribute is not existing no mobile devices will be generated..</b>
+                 </li>
+                 <li><i>generateWeather</i><br>
+                     By default no weather channel is generated. If you want to use the weather as it is defined by the tado system for your specific environment you must set this attribute. If the attribute <i>generateWeather</i> is set to <i>yes</i> an additional weather channel can be generated.
+                     <br/><b>If this attribute is set to <i>no</i> or if the attribute is not existing no Devices will be generated..</b>
+                  </li>
+          </ul>
+    </ul>
 </ul>
 
 =end html
